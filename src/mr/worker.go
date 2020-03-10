@@ -1,10 +1,13 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"encoding/gob"
+	"fmt"
+	"hash/fnv"
+	"log"
+	"net/rpc"
+	"os"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,18 +27,41 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
 //
 // main/mrworker.go calls this function.
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
+	gob.Register(MapTask{})
 	// Your worker implementation here.
+	GetTask()
 
 	// uncomment to send the Example RPC to the master.
 	// CallExample()
 
+}
+
+// GetTask gets the task from the master
+// and return it. It returns an error if
+// the rpc call to master returns an error.
+// In which case, the worker program should just abort
+func GetTask() error {
+
+	var reply Task
+
+	ok := false
+	for i := 0; ok == false && i <= 5; i++ {
+		ok = call("Master.GetTask", &struct{}{}, &reply)
+	}
+
+	if !ok {
+		os.Exit(1)
+	}
+
+	fmt.Printf("%+v", reply)
+
+	return nil
 }
 
 //
