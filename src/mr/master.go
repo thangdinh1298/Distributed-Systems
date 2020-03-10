@@ -1,11 +1,14 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
-
+import (
+	"encoding/gob"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+)
 
 type Master struct {
 	// Your definitions here.
@@ -24,6 +27,20 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
+//
+// This function returns a task to the caller
+// Task could be any of the following types:
+//  - Map task
+//  - Reduce tasl
+// This funtion returns an error if something goes wrong or
+// All tasks has been completed
+func (m *Master) GetTask(args struct{}, reply *Task) error {
+	fmt.Printf("ABED")
+	*reply = MapTask{1, "abcd"}
+
+	fmt.Printf("%v %T\n", *reply, *reply)
+	return nil
+}
 
 //
 // start a thread that listens for RPCs from worker.go
@@ -50,7 +67,6 @@ func (m *Master) Done() bool {
 
 	// Your code here.
 
-
 	return ret
 }
 
@@ -61,9 +77,9 @@ func (m *Master) Done() bool {
 //
 func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
+	gob.Register(MapTask{})
 
 	// Your code here.
-
 
 	m.server()
 	return &m
