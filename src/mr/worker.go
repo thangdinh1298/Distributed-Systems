@@ -1,12 +1,13 @@
 package mr
 
 import (
-	"encoding/gob"
 	"fmt"
 	"hash/fnv"
+	"io/ioutil"
 	"log"
 	"net/rpc"
 	"os"
+	"time"
 )
 
 //
@@ -30,29 +31,87 @@ func ihash(key string) int {
 //
 // main/mrworker.go calls this function.
 //
+// this method tries to get a task from master
+// execute that task by calling the appropriate function
+// and communicate back with master when the task is done
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	gob.Register(MapTask{})
-	// Your worker implementation here.
-	GetTask()
+	for {
+		task, _ := GetTask()
+		switch task.TType {
+		case mapTask:
+			fileName := task.Args[0]
+			bytes, err := ioutil.ReadFile(fileName)
+			if err != nil {
+				os.Exit(1)
+			}
+			pairs := mapf(fileName, string(bytes))
+			err = WriteMapResultToFile(task, pairs)
+			if err != nil {
+				os.Exit(1)
+			}
+
+		case reduceTask:
+			// reducef()
+		}
+	}
 
 	// uncomment to send the Example RPC to the master.
 	// CallExample()
 
 }
 
+/*
+	For every key value pair, this function
+	determine the file indices (mapTaskNum, ReduceTaskNum)
+	to which the key belongs. It then opens the file and write
+	the pair to file as a string
+*/
+func WriteMapResultToFile(task Task, pairs []KeyValue) error {
+	mapTaskNum := task.TaskNum
+	numReduceTask := task.NReduce
+
+	for _, val := range pairs {
+		reduceTaskNum := ihash(val.Key) % numReduceTask
+
+		outFileName := fmt.Sprintf("mr-%d-%d", mapTaskNum, reduceTaskNum)
+		f, err := os.Create(outFileName)
+		defer f.Close()
+
+		if err != nil {
+			return err
+		}
+
+		_, err = f.WriteString(fmt.Sprintf("%s %s\n", val.Key, val.Value))
+		if err != nil {
+			return err
+		}
+
+	}
+
+	return nil
+
+	return nil
+}
+
 // GetTask gets the task from the master
 // and return it. It returns an error if
 // the rpc call to master returns an error.
 // In which case, the worker program should just abort
-func GetTask() error {
+func GetTask() (Task, error) {
 
 	var reply Task
+	var ok = false
+	var retry = 5
 
-	ok := false
-	for i := 0; ok == false && i <= 5; i++ {
+	for i := 0; ok == false && i < retry; i++ {
 		ok = call("Master.GetTask", &struct{}{}, &reply)
+
+		// Sleep 5s if rpc was unsuccessful
+		if !ok && i < retry-1 {
+			time.Sleep(5 * time.Second)
+		}
 	}
 
 	if !ok {
@@ -61,7 +120,7 @@ func GetTask() error {
 
 	fmt.Printf("%+v", reply)
 
-	return nil
+	return reply, nil
 }
 
 //

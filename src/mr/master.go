@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"encoding/gob"
 	"fmt"
 	"log"
 	"net"
@@ -35,8 +34,10 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 // This funtion returns an error if something goes wrong or
 // All tasks has been completed
 func (m *Master) GetTask(args struct{}, reply *Task) error {
-	fmt.Printf("ABED")
-	*reply = MapTask{1, "abcd"}
+	reply = &Task{
+		TType: 1,
+		// Args:  MapTaskArgs{"ABCDE"},
+	}
 
 	fmt.Printf("%v %T\n", *reply, *reply)
 	return nil
@@ -77,7 +78,6 @@ func (m *Master) Done() bool {
 //
 func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
-	gob.Register(MapTask{})
 
 	// Your code here.
 
