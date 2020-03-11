@@ -65,8 +65,12 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 
 		case reduceTask:
-			var file *os.File
-			var writer func(string, string) error
+			outFileName := fmt.Sprintf("mr-out-%d", task.TaskNum)
+			file, err := ioutil.TempFile(".", outFileName)
+
+			if err != nil {
+				goto cleanup
+			}
 
 			for i := 0; i < task.NMap; i++ {
 				m := MapOutFile{
@@ -86,20 +90,24 @@ func Worker(mapf func(string, string) []KeyValue,
 				if err != nil {
 					fmt.Println(err)
 					// f.Close()
-					os.Exit(1)
+					// os.Exit(1)
+					goto cleanup
 				}
 
 				pairs, err := loadKeyValuePairs(f)
+				f.Close()
 
 				if err != nil {
 					fmt.Println(err)
-					os.Exit(1)
+					// os.Exit(1)
+					goto cleanup
 				}
 
-				file, writer, err = reduceResultWriter(task)
+				writer, err := reduceResultWriter(file)
 				if err != nil {
 					fmt.Println(err)
-					os.Exit(1)
+					// os.Exit(1)
+					goto cleanup
 				}
 
 				//for every key that are the same as the one before, pass it to the reduce function
@@ -115,12 +123,14 @@ func Worker(mapf func(string, string) []KeyValue,
 
 					if writer(pairs[i].Key, value); err != nil {
 						fmt.Println(err)
-						os.Exit(1)
+						// os.Exit(1)
+						goto cleanup
 					}
 					i = j
 				}
 			}
 			os.Rename(file.Name(), fmt.Sprintf("mr-out-%d", task.TaskNum))
+		cleanup:
 			file.Close()
 		}
 		time.Sleep(5 * time.Second)
@@ -130,16 +140,9 @@ func Worker(mapf func(string, string) []KeyValue,
 	// CallExample()
 }
 
-func reduceResultWriter(task Task) (*os.File, func(string, string) error, error) {
-	outFileName := fmt.Sprintf("mr-out-%d", task.TaskNum)
-	// f, err := os.Open(outFileName)
-	f, err := ioutil.TempFile(".", outFileName)
-
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return f, func(key, value string) error {
+//Returns a function that writes key-value pairs to the designated output file
+func reduceResultWriter(f *os.File) (func(string, string) error, error) {
+	return func(key, value string) error {
 		_, err := f.WriteString(fmt.Sprintf("%s %s\n", key, value))
 		return err
 	}, nil
@@ -147,11 +150,11 @@ func reduceResultWriter(task Task) (*os.File, func(string, string) error, error)
 
 /*
 	This function loads the key value pair from the
-	intermediate output file f into a slice and return it
+	intermediate output file f into a slice and return it.
+	This function also closes the file passed to it
 	Optimize: return a pointer instead
 */
 func loadKeyValuePairs(f *os.File) ([]KeyValue, error) {
-	defer f.Close()
 	dec := json.NewDecoder(f)
 	pairs := []KeyValue{}
 
