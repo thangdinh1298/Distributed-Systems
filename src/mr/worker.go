@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/rpc"
@@ -64,14 +65,111 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 
 		case reduceTask:
-			// reducef()
+			var file *os.File
+			var writer func(string, string) error
+
+			for i := 0; i < task.NMap; i++ {
+				m := MapOutFile{
+					mapTask:    i,
+					reduceTask: task.TaskNum,
+				}
+
+				f, err := os.Open(m.String())
+				// defer f.Close()
+				//If file does not exist, skip it because the map task might not have generated an output file for this reduce task
+				if os.IsNotExist(err) {
+					fmt.Println(err)
+					// f.Close()
+					continue
+				}
+				//If other error besides file not exists, just exit
+				if err != nil {
+					fmt.Println(err)
+					// f.Close()
+					os.Exit(1)
+				}
+
+				pairs, err := loadKeyValuePairs(f)
+
+				if err != nil {
+					fmt.Println(err)
+					os.Exit(1)
+				}
+
+				file, writer, err = reduceResultWriter(task)
+				if err != nil {
+					fmt.Println(err)
+					os.Exit(1)
+				}
+
+				//for every key that are the same as the one before, pass it to the reduce function
+				for i := 0; i < len(pairs); {
+					j := i + 1
+					values := []string{}
+					values = append(values, pairs[i].Value)
+					for j < len(pairs) && pairs[j].Key == pairs[i].Key {
+						values = append(values, pairs[j].Value)
+						j++
+					}
+					value := reducef(pairs[i].Key, values)
+
+					if writer(pairs[i].Key, value); err != nil {
+						fmt.Println(err)
+						os.Exit(1)
+					}
+					i = j
+				}
+			}
+			os.Rename(file.Name(), fmt.Sprintf("mr-out-%d", task.TaskNum))
+			file.Close()
 		}
 		time.Sleep(5 * time.Second)
 	}
 
 	// uncomment to send the Example RPC to the master.
 	// CallExample()
+}
 
+func reduceResultWriter(task Task) (*os.File, func(string, string) error, error) {
+	outFileName := fmt.Sprintf("mr-out-%d", task.TaskNum)
+	// f, err := os.Open(outFileName)
+	f, err := ioutil.TempFile(".", outFileName)
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return f, func(key, value string) error {
+		_, err := f.WriteString(fmt.Sprintf("%s %s\n", key, value))
+		return err
+	}, nil
+}
+
+/*
+	This function loads the key value pair from the
+	intermediate output file f into a slice and return it
+	Optimize: return a pointer instead
+*/
+func loadKeyValuePairs(f *os.File) ([]KeyValue, error) {
+	defer f.Close()
+	dec := json.NewDecoder(f)
+	pairs := []KeyValue{}
+
+	pair := KeyValue{}
+
+	for {
+		if err := dec.Decode(&pair); err == io.EOF {
+			break
+		} else if err != nil {
+			fmt.Println("Error decoding intermediate key")
+			return nil, err
+		}
+
+		pairs = append(pairs, pair)
+
+	}
+
+	return pairs, nil
 }
 
 /*
