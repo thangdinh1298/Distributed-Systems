@@ -26,7 +26,7 @@ type MapOutFile struct {
 }
 
 func (f *MapOutFile) String() string {
-	return fmt.Sprintf("mr-%d-%d", mapTask, reduceTask)
+	return fmt.Sprintf("mr-%d-%d", f.mapTask, f.reduceTask)
 }
 
 //
@@ -50,7 +50,6 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	for {
 		task, _ := GetTask()
-		fmt.Printf("Got task %+v\n", task)
 		switch task.TType {
 		case mapTask:
 			fileName := task.Args[0]
@@ -99,8 +98,8 @@ func WriteMapResultToFile(task Task, pairs []KeyValue) error {
 				mapTask:    mapTaskNum,
 				reduceTask: reduceTaskNum,
 			}
+
 			f, err := ioutil.TempFile(".", outFile.String())
-			fmt.Printf("%+v\n", f.Name())
 			defer f.Close()
 			outFile.file = f
 
@@ -111,9 +110,11 @@ func WriteMapResultToFile(task Task, pairs []KeyValue) error {
 			files[reduceTaskNum] = &outFile
 		}
 		outFile := files[reduceTaskNum]
+		// fmt.Printf("Grabbing %d %d\n", outFile.mapTask, outFile.reduceTask)
 
 		enc := json.NewEncoder(outFile.file)
 		err := enc.Encode(val)
+		fmt.Println(err)
 		if err != nil {
 			return err
 		}
