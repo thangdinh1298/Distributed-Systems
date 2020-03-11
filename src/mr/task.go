@@ -13,4 +13,5 @@ type Task struct {
 	Args    []string
 	TaskNum int
 	NReduce int
+	NMap    int //number of map tasks
 }
