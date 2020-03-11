@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"io/ioutil"
@@ -14,8 +15,18 @@ import (
 // Map functions return a slice of KeyValue.
 //
 type KeyValue struct {
-	Key   string
-	Value string
+	Key   string `json:key`
+	Value string `json:value`
+}
+
+type MapOutFile struct {
+	file       *os.File
+	mapTask    int
+	reduceTask int
+}
+
+func (f *MapOutFile) String() string {
+	return fmt.Sprintf("mr-%d-%d", mapTask, reduceTask)
 }
 
 //
@@ -39,6 +50,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	for {
 		task, _ := GetTask()
+		fmt.Printf("Got task %+v\n", task)
 		switch task.TType {
 		case mapTask:
 			fileName := task.Args[0]
@@ -55,6 +67,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		case reduceTask:
 			// reducef()
 		}
+		time.Sleep(5 * time.Second)
 	}
 
 	// uncomment to send the Example RPC to the master.
@@ -65,32 +78,53 @@ func Worker(mapf func(string, string) []KeyValue,
 /*
 	For every key value pair, this function
 	determine the file indices (mapTaskNum, ReduceTaskNum)
-	to which the key belongs. It then opens the file and write
-	the pair to file as a string
+	to which the key belongs.
+	If the file with this reduce task index has not been opened
+	before, it opens a tempfile for it
+	Else, it grabs the file and write the encoded string to it
+
+	After it's done with all the pairs
+	This function rename all the temp files to the original file
 */
 func WriteMapResultToFile(task Task, pairs []KeyValue) error {
 	mapTaskNum := task.TaskNum
 	numReduceTask := task.NReduce
+	files := make([]*MapOutFile, numReduceTask)
 
 	for _, val := range pairs {
 		reduceTaskNum := ihash(val.Key) % numReduceTask
 
-		outFileName := fmt.Sprintf("mr-%d-%d", mapTaskNum, reduceTaskNum)
-		f, err := os.Create(outFileName)
-		defer f.Close()
+		if files[reduceTaskNum] == nil {
+			outFile := MapOutFile{
+				mapTask:    mapTaskNum,
+				reduceTask: reduceTaskNum,
+			}
+			f, err := ioutil.TempFile(".", outFile.String())
+			fmt.Printf("%+v\n", f.Name())
+			defer f.Close()
+			outFile.file = f
 
+			if err != nil {
+				return err
+			}
+
+			files[reduceTaskNum] = &outFile
+		}
+		outFile := files[reduceTaskNum]
+
+		enc := json.NewEncoder(outFile.file)
+		err := enc.Encode(val)
 		if err != nil {
 			return err
 		}
-
-		_, err = f.WriteString(fmt.Sprintf("%s %s\n", val.Key, val.Value))
-		if err != nil {
-			return err
-		}
-
 	}
 
-	return nil
+	for _, tFiles := range files {
+		err := os.Rename(tFiles.file.Name(), tFiles.String())
+		if err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
