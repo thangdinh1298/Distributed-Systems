@@ -75,87 +75,61 @@ func Worker(mapf func(string, string) []KeyValue,
 			task.markDone()
 
 		case reduceTask:
+			var pairs *[]KeyValue
 			outFileName := fmt.Sprintf("mr-out-%d", task.TaskNum)
 			file, err := ioutil.TempFile(".", outFileName)
 
 			if err != nil {
-				goto cleanup
+				file.Close()
+				continue
 			}
 
-			for i := 0; i < task.NMap; i++ {
-				m := MapOutFile{
-					mapTask:    i,
-					reduceTask: task.TaskNum,
-				}
+			writer, err := reduceResultWriter(file)
 
-				f, err := os.Open(m.String())
-				// defer f.Close()
-				//If file does not exist, skip it because the map task might not have generated an output file for this reduce task
-				if os.IsNotExist(err) {
-					// fmt.Println(err)
-					// f.Close()
+			if err != nil {
+				file.Close()
+				continue
+			}
+
+			pairs, err = loadAll(task)
+
+			if err != nil {
+				file.Close()
+				continue
+			}
+
+			//Sort the kv slice
+			sort.Sort(ByKey(*pairs))
+
+			//for every key that are the same as the one before, pass it to the reduce function
+			for i := 0; i < len(*pairs); {
+				j := i + 1
+				values := []string{}
+				values = append(values, (*pairs)[i].Value)
+				for j < len(*pairs) && (*pairs)[j].Key == (*pairs)[i].Key {
+					values = append(values, (*pairs)[j].Value)
+					j++
+				}
+				value := reducef((*pairs)[i].Key, values)
+
+				if writer((*pairs)[i].Key, value); err != nil {
+					file.Close()
 					continue
 				}
-				//If other error besides file not exists, just exit
-				if err != nil {
-					// fmt.Println(err)
-					// f.Close()
-					// os.Exit(1)
-					goto cleanup
-				}
-
-				pairs, err := loadKeyValuePairs(f)
-				f.Close()
-
-				if err != nil {
-					// fmt.Println(err)
-					// os.Exit(1)
-					goto cleanup
-				}
-
-				writer, err := reduceResultWriter(file)
-				if err != nil {
-					// fmt.Println(err)
-					// os.Exit(1)
-					goto cleanup
-				}
-
-				//Sort the kv slice
-				sort.Sort(ByKey(pairs))
-
-				//for every key that are the same as the one before, pass it to the reduce function
-				for i := 0; i < len(pairs); {
-					j := i + 1
-					values := []string{}
-					values = append(values, pairs[i].Value)
-					for j < len(pairs) && pairs[j].Key == pairs[i].Key {
-						values = append(values, pairs[j].Value)
-						j++
-					}
-					value := reducef(pairs[i].Key, values)
-
-					if writer(pairs[i].Key, value); err != nil {
-						// fmt.Println(err)
-						// os.Exit(1)
-						goto cleanup
-					}
-					i = j
-				}
+				i = j
 			}
 			os.Rename(file.Name(), fmt.Sprintf("mr-out-%d", task.TaskNum))
-		cleanup:
 			task.markDone()
-			file.Close()
 		case waitTask:
 			// fmt.Println("Waiting to be assigned a task")
 		}
 		time.Sleep(1 * time.Second)
 	}
-
-	// uncomment to send the Example RPC to the master.
-	// CallExample()
 }
 
+/*
+	This function calls the master to notify that the task has been completed
+*/
 func (t Task) markDone() {
 	call("Master.MarkDone", t, &struct{}{})
 }
@@ -166,6 +140,42 @@ func reduceResultWriter(f *os.File) (func(string, string) error, error) {
 		_, err := f.WriteString(fmt.Sprintf("%s %s\n", key, value))
 		return err
 	}, nil
+}
+
+/*
+	This function loads all key value pairs of relevant intermediate files
+	into the memory and return the slice
+*/
+func loadAll(task Task) (*[]KeyValue, error) {
+	pairs := []KeyValue{}
+	for i := 0; i < task.NMap; i++ {
+		m := MapOutFile{
+			mapTask:    i,
+			reduceTask: task.TaskNum,
+		}
+
+		f, err := os.Open(m.String())
+		defer f.Close()
+		// defer f.Close()
+		//If file does not exist, skip it because the map task might not have generated an output file for this reduce task
+		if os.IsNotExist(err) {
+			continue
+		}
+		//If other error besides file not exists, just exit
+		if err != nil {
+			return nil, err
+		}
+
+		p, err := loadKeyValuePairs(f)
+		if err != nil {
+			return nil, err
+		}
+
+		pairs = append(pairs, p...)
+
+	}
+
+	return &pairs, nil
 }
 
 /*
@@ -320,6 +330,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	fmt.Println(err)
+	fmt.Println(fmt.Sprintf("Error during call to %s %s", rpcname, err.Error()))
 	return false
 }
