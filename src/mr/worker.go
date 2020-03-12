@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"time"
 )
 
@@ -19,6 +20,14 @@ type KeyValue struct {
 	Key   string `json:key`
 	Value string `json:value`
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 type MapOutFile struct {
 	file       *os.File
@@ -63,6 +72,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			if err != nil {
 				os.Exit(1)
 			}
+			task.markDone()
 
 		case reduceTask:
 			outFileName := fmt.Sprintf("mr-out-%d", task.TaskNum)
@@ -82,13 +92,13 @@ func Worker(mapf func(string, string) []KeyValue,
 				// defer f.Close()
 				//If file does not exist, skip it because the map task might not have generated an output file for this reduce task
 				if os.IsNotExist(err) {
-					fmt.Println(err)
+					// fmt.Println(err)
 					// f.Close()
 					continue
 				}
 				//If other error besides file not exists, just exit
 				if err != nil {
-					fmt.Println(err)
+					// fmt.Println(err)
 					// f.Close()
 					// os.Exit(1)
 					goto cleanup
@@ -98,17 +108,20 @@ func Worker(mapf func(string, string) []KeyValue,
 				f.Close()
 
 				if err != nil {
-					fmt.Println(err)
+					// fmt.Println(err)
 					// os.Exit(1)
 					goto cleanup
 				}
 
 				writer, err := reduceResultWriter(file)
 				if err != nil {
-					fmt.Println(err)
+					// fmt.Println(err)
 					// os.Exit(1)
 					goto cleanup
 				}
+
+				//Sort the kv slice
+				sort.Sort(ByKey(pairs))
 
 				//for every key that are the same as the one before, pass it to the reduce function
 				for i := 0; i < len(pairs); {
@@ -122,7 +135,7 @@ func Worker(mapf func(string, string) []KeyValue,
 					value := reducef(pairs[i].Key, values)
 
 					if writer(pairs[i].Key, value); err != nil {
-						fmt.Println(err)
+						// fmt.Println(err)
 						// os.Exit(1)
 						goto cleanup
 					}
@@ -131,13 +144,20 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 			os.Rename(file.Name(), fmt.Sprintf("mr-out-%d", task.TaskNum))
 		cleanup:
+			task.markDone()
 			file.Close()
+		case waitTask:
+			// fmt.Println("Waiting to be assigned a task")
 		}
-		time.Sleep(5 * time.Second)
+		time.Sleep(1 * time.Second)
 	}
 
 	// uncomment to send the Example RPC to the master.
 	// CallExample()
+}
+
+func (t Task) markDone() {
+	call("Master.MarkDone", t, &struct{}{})
 }
 
 //Returns a function that writes key-value pairs to the designated output file
@@ -164,7 +184,7 @@ func loadKeyValuePairs(f *os.File) ([]KeyValue, error) {
 		if err := dec.Decode(&pair); err == io.EOF {
 			break
 		} else if err != nil {
-			fmt.Println("Error decoding intermediate key")
+			// fmt.Println("Error decoding intermediate key")
 			return nil, err
 		}
 
@@ -215,7 +235,6 @@ func WriteMapResultToFile(task Task, pairs []KeyValue) error {
 
 		enc := json.NewEncoder(outFile.file)
 		err := enc.Encode(val)
-		fmt.Println(err)
 		if err != nil {
 			return err
 		}
@@ -254,7 +273,7 @@ func GetTask() (Task, error) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("%+v", reply)
+	// fmt.Printf("%+v", reply)
 
 	return reply, nil
 }
