@@ -76,7 +76,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 		case reduceTask:
 			var pairs *[]KeyValue
-			outFileName := fmt.Sprintf("mr-out-%d", task.TaskNum)
+			outFileName := fmt.Sprintf("tmp-mr-out-%d", task.TaskNum)
 			file, err := ioutil.TempFile(".", outFileName)
 
 			if err != nil {
@@ -101,6 +101,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			//Sort the kv slice
 			sort.Sort(ByKey(*pairs))
 
+			succeeded := true
 			//for every key that are the same as the one before, pass it to the reduce function
 			for i := 0; i < len(*pairs); {
 				j := i + 1
@@ -113,13 +114,18 @@ func Worker(mapf func(string, string) []KeyValue,
 				value := reducef((*pairs)[i].Key, values)
 
 				if writer((*pairs)[i].Key, value); err != nil {
+					succeeded = false
 					file.Close()
-					continue
+					break
 				}
 				i = j
 			}
-			os.Rename(file.Name(), fmt.Sprintf("mr-out-%d", task.TaskNum))
-			task.markDone()
+			if succeeded {
+				fmt.Sprintf("Renaming file %s to %s\n", file.Name(), fmt.Sprintf("mr-out-%d", task.TaskNum))
+				os.Rename(file.Name(), fmt.Sprintf("mr-out-%d", task.TaskNum))
+				task.markDone()
+			}
+
 		case waitTask:
 			// fmt.Println("Waiting to be assigned a task")
 		}
@@ -137,6 +143,7 @@ func (t Task) markDone() {
 //Returns a function that writes key-value pairs to the designated output file
 func reduceResultWriter(f *os.File) (func(string, string) error, error) {
 	return func(key, value string) error {
+		fmt.Printf("Writing to output file %s value %s %s\n", f.Name(), key, value)
 		_, err := f.WriteString(fmt.Sprintf("%s %s\n", key, value))
 		return err
 	}, nil
