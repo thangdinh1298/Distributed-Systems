@@ -251,6 +251,9 @@ func WriteMapResultToFile(task Task, pairs []KeyValue) error {
 	}
 
 	for _, tFiles := range files {
+		if tFiles == nil {
+			continue
+		}
 		err := os.Rename(tFiles.file.Name(), tFiles.String())
 		if err != nil {
 			return err
