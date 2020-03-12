@@ -121,7 +121,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				i = j
 			}
 			if succeeded {
-				fmt.Sprintf("Renaming file %s to %s\n", file.Name(), fmt.Sprintf("mr-out-%d", task.TaskNum))
+				fmt.Printf("Renaming file %s to %s\n", file.Name(), fmt.Sprintf("mr-out-%d", task.TaskNum))
 				os.Rename(file.Name(), fmt.Sprintf("mr-out-%d", task.TaskNum))
 				task.markDone()
 			}
@@ -143,7 +143,6 @@ func (t Task) markDone() {
 //Returns a function that writes key-value pairs to the designated output file
 func reduceResultWriter(f *os.File) (func(string, string) error, error) {
 	return func(key, value string) error {
-		fmt.Printf("Writing to output file %s value %s %s\n", f.Name(), key, value)
 		_, err := f.WriteString(fmt.Sprintf("%s %s\n", key, value))
 		return err
 	}, nil
@@ -237,7 +236,7 @@ func WriteMapResultToFile(task Task, pairs []KeyValue) error {
 				reduceTask: reduceTaskNum,
 			}
 
-			f, err := ioutil.TempFile(".", outFile.String())
+			f, err := ioutil.TempFile(".", "tmp-"+outFile.String())
 			defer f.Close()
 			outFile.file = f
 
