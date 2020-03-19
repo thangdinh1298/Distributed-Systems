@@ -19,7 +19,6 @@ package raft
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -72,14 +71,16 @@ type Raft struct {
 
 	//2A voting related
 	// switchCh         chan bool // Signal that a state change just occurred
-	timeout          time.Duration
-	state            int32
-	appendEntryChan  chan bool // only send signal through this channel if the request was valid
-	grantVoteChan    chan bool // only send signal through this channel if the request was valid
-	receivedVoteChan chan bool
-	currentTerm      int
-	isLeader         bool
-	votedFor         int // Voted for anyone during this term, reset to -1 with each term update
+	timeout       time.Duration
+	state         int32
+	lastHeartBeat time.Time
+	timeoutChan   chan struct{} // only send signal through this channel if the request was valid
+	heartBeatChan chan struct{} // only send signal through this channel if the request was valid
+	// receivedVoteChan chan bool
+	voteCount   int
+	currentTerm int
+	isLeader    bool
+	votedFor    int // Voted for anyone during this term, reset to -1 with each term update
 }
 
 // return currentTerm and whether this server
@@ -157,10 +158,11 @@ type RequestVoteReply struct {
 }
 
 func (rf *Raft) setTerm(term int) {
-	rf.mu.Lock()
+	// rf.mu.Lock()
 	rf.currentTerm = term
 	rf.votedFor = -1
-	rf.mu.Unlock()
+	rf.voteCount = 1
+	// rf.mu.Unlock()
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -169,8 +171,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = false
 
 	// For 2A, vote requestor's log doesn't have to be up-to-date
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if rf.currentTerm > args.Term {
 		reply.Term = rf.currentTerm
 		return
@@ -182,40 +184,55 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//check if we've voted for anyone in this term. If we have not then we can vote for this one
 	if rf.votedFor == -1 {
 		reply.VoteGranted = true
-		// rf.mu.Lock()
-		// defer rf.mu.Unlock()
+		rf.lastHeartBeat = time.Now() //if vote was granted, also reset the timer
 		rf.votedFor = args.CandidateId
 	}
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	if rf.currentTerm > args.Term {
+		reply.Success = false
+		return
+	}
+
+	rf.mu.Lock()
+	// fmt.Printf("Server %d received heartbeat message from leader for term %d\n", rf.me, args.Term)
+	reply.Success = true
 	if rf.currentTerm < args.Term {
 		rf.setTerm(args.Term)
-		reply.Success = true
-		rf.appendEntryChan <- true
-	} else if rf.currentTerm == args.Term {
-		reply.Success = true
-		rf.appendEntryChan <- true
-	} else {
-		reply.Success = false
+
+	}
+	rf.lastHeartBeat = time.Now()
+	rf.mu.Unlock()
+
+	// Send to heartBeatChan if it doesn't block
+	// If it does, no sending is needed
+	select {
+	case rf.heartBeatChan <- struct{}{}:
+		return
+	default:
+		// fmt.Println("Heartbeat chan is blocked, doing nothing")
+		return
 	}
 }
 
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	if reply.VoteGranted == true {
-		rf.receivedVoteChan <- true
+	rf.mu.Lock()
+	if reply.VoteGranted == true || reply.Term == rf.currentTerm {
+		rf.voteCount++
 	}
+	rf.mu.Unlock()
 	return ok
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	// rf.mu.Lock()
+	rf.mu.Lock()
 	if rf.currentTerm < reply.Term {
 		rf.setTerm(reply.Term)
 	}
-	// rf.mu.Unlock()
+	rf.mu.Unlock()
 	return ok
 }
 
@@ -288,8 +305,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// fmt.Printf("Time out :%+v\n", rf.timeout)
 	rf.currentTerm = 0
 	rf.isLeader = false
-	rf.appendEntryChan = make(chan bool, 1)
-	rf.grantVoteChan = make(chan bool, 1)
+	rf.lastHeartBeat = time.Now()
+	rf.heartBeatChan = make(chan struct{}, 1)
+	rf.timeoutChan = make(chan struct{})
 	//Run the raft
 	go rf.Execute()
 
@@ -302,6 +320,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 func (rf *Raft) Execute() {
 	for {
 		// fmt.Printf("Server %d: State is: %d\n", rf.me, rf.state)
+
+		//race condiditon of rf.state
 		switch rf.state {
 		case FOLLOWER:
 			rf.runFollower()
@@ -317,6 +337,24 @@ func (rf *Raft) changeState(state int32) {
 	atomic.StoreInt32(&rf.state, state)
 }
 
+func (rf *Raft) timeoutWatch(ctx context.Context) {
+	for {
+		rf.mu.Lock()
+		timeElapsed := time.Now().Sub(rf.lastHeartBeat)
+		rf.mu.Unlock()
+
+		if timeElapsed >= rf.timeout {
+			select {
+			case <-ctx.Done():
+				return
+			case rf.timeoutChan <- struct{}{}:
+				return
+			}
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+}
+
 //
 // This function should watch for incoming AppendEntries request
 // If no such request was made, call the Elect Leader function and wait for its result.
@@ -325,36 +363,26 @@ func (rf *Raft) changeState(state int32) {
 
 // No premature cancellation will happen to this function, hence a context is not necessary
 func (rf *Raft) runFollower() {
-	// fmt.Printf("Server %d  Term: %d : Running as follower\n", rf.me, rf.currentTerm)
-	timeElapsed := 0 //miliseconds
-	for {
-		// fmt.Printf("Time elapsed: %d %d\n", timeElapsed, rf.timeout)
-		select {
-		case <-rf.appendEntryChan:
-			// fmt.Printf("Sever %d Term: %d received a heartbeat message\n", rf.me, rf.currentTerm)
-			timeElapsed = 0
-		case <-rf.grantVoteChan:
-			timeElapsed = 0
-		default:
-			time.Sleep(1 * time.Millisecond)
-			timeElapsed++
-			if time.Duration(timeElapsed)*time.Millisecond >= rf.timeout { //doesn't need lock
-				rf.changeState(CANDIDATE)
-				return
-			}
-		}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go rf.timeoutWatch(ctx)
+	select {
+	case <-rf.timeoutChan:
+		rf.changeState(CANDIDATE)
 	}
 }
 
+/*
+	Increment term and send request vote
+	periodically after each 1ms, check the votecount.
+	If the number of votes exceed the majority change to leader state
+	else keep waiting until either round timeout or gets new vote
+*/
 func (rf *Raft) runCandidate() {
-	var voteCount int = 1
-	var timer *time.Timer = time.NewTimer(rf.timeout)
-
 	//Lock raft to allocate a new channel
-	// rf.mu.Lock()
-	rf.receivedVoteChan = make(chan bool, len(rf.peers)-1)
-	// rf.mu.Unlock()
+	rf.mu.Lock()
 	rf.setTerm(rf.currentTerm + 1)
+	rf.mu.Unlock()
 
 	// fmt.Printf("Server %d  Term: %d : I'm becoming candidate\n", rf.me, rf.currentTerm)
 	for i := 0; i < len(rf.peers); i++ {
@@ -362,33 +390,41 @@ func (rf *Raft) runCandidate() {
 			go rf.sendRequestVote(i, &RequestVoteArgs{Term: rf.currentTerm, CandidateId: rf.me}, &RequestVoteReply{})
 		}
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go rf.timeoutWatch(ctx)
 
 	for {
-		select {
-		case <-timer.C:
-			fmt.Println(rf.timeout)
-			rf.changeState(CANDIDATE)
-			return
-		case <-rf.receivedVoteChan:
-			voteCount++
-		case <-rf.appendEntryChan:
-			rf.changeState(FOLLOWER)
-			return
-		default:
-			if voteCount > len(rf.peers)/2 {
-				// fmt.Printf("Got %d votes, elected\n", voteCount)
-				rf.changeState(LEADER)
+		rf.mu.Lock()
+		votes := rf.voteCount
+		rf.mu.Unlock()
+		if votes <= len(rf.peers)/2 {
+			select {
+			case <-rf.timeoutChan:
+				rf.changeState(CANDIDATE)
 				return
+			case <-rf.heartBeatChan:
+				// fmt.Println("Received heartbeat from new leader, reverting back to follower state")
+				rf.changeState(FOLLOWER)
+				return
+			default:
+				//Nothing happens
 			}
+		} else {
+			rf.changeState(LEADER)
+			return
 		}
+
+		time.Sleep(1 * time.Millisecond)
 	}
+
 }
 
 func (rf *Raft) runLeader() {
-	// fmt.Printf("Server %d: I'm becoming Leader			Term: %d \n", rf.me, rf.currentTerm)
-	// rf.mu.Lock()
+	// fmt.Printf("Server %d Term: %d: I'm becoming Leader\n", rf.me, rf.currentTerm)
+	rf.mu.Lock()
 	rf.isLeader = true
-	// rf.mu.Unlock()
+	rf.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	go func(ctx context.Context) {
 		for {
@@ -409,12 +445,12 @@ func (rf *Raft) runLeader() {
 
 	for {
 		select {
-		case <-rf.appendEntryChan:
+		case <-rf.heartBeatChan:
 			rf.changeState(FOLLOWER)
 			cancel()
-			// rf.mu.Lock()
+			rf.mu.Lock()
 			rf.isLeader = false
-			// rf.mu.Unlock()
+			rf.mu.Unlock()
 			return
 		}
 	}
