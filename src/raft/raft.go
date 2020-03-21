@@ -169,13 +169,13 @@ type RequestVoteReply struct {
 // }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	fmt.Printf("Server %d  Term: %d : Received a vote request from %d for term %d\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 	// Your code here (2A, 2B).
 	reply.Term = args.Term
 
 	// For 2A, vote requestor's log doesn't have to be up-to-date
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	fmt.Printf("Server %d  Term: %d : Received a vote request from %d for term %d\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 	if rf.currentTerm > args.Term {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
@@ -191,6 +191,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	//check if we've voted for anyone in this term. If we have not then we can vote for this one
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+		fmt.Printf("Server %d  Term: %d : granted vote to %d for term %d\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 		reply.VoteGranted = true
 		rf.lastHeartBeat = time.Now() //if vote was granted, also reset the timer
 		rf.votedFor = args.CandidateId
@@ -461,7 +462,7 @@ func (rf *Raft) runCandidate(ctx context.Context, cancel context.CancelFunc) {
 	rf.mu.Lock()
 	// rf.setTerm(rf.currentTerm + 1)
 	rf.currentTerm++
-	rf.votedFor = -1
+	rf.votedFor = rf.me
 	rf.voteCount = 1
 	rf.mu.Unlock()
 
@@ -544,8 +545,9 @@ func (rf *Raft) runLeader(ctx context.Context, cancel context.CancelFunc) {
 					if rf.me != i {
 						rf.mu.Lock()
 						term := rf.currentTerm
+						me := rf.me
 						rf.mu.Unlock()
-						go rf.sendAppendEntries(i, &AppendEntriesArgs{term}, &AppendEntriesReply{})
+						go rf.sendAppendEntries(i, &AppendEntriesArgs{Term: term, LeaderID: me}, &AppendEntriesReply{})
 					}
 				}
 				time.Sleep(150 * time.Millisecond)
