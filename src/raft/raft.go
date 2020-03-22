@@ -325,7 +325,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.state = FOLLOWER // Every node starts as a follower
 	// rf.timeout = time.Duration(rand.Intn(151)+150) * time.Millisecond
-	rf.timeout = time.Duration(rand.Intn(3)+1) * time.Second
+	rf.timeout = time.Duration(rand.Intn(2000)+1000) * time.Millisecond
 	rf.currentTerm = 0
 	rf.isLeader = false
 	rf.lastHeartBeat = time.Now()
